@@ -1,0 +1,22 @@
+{
+  "version": 4,
+  "lastComputedDate": "2026-07-24",
+  "modelUsage": {
+    "claude-sonnet-4-6": {
+      "inputTokens": 300,
+      "outputTokens": 1000,
+      "cacheReadInputTokens": 20000,
+      "cacheCreationInputTokens": 5000,
+      "costUSD": 0
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 150,
+      "outputTokens": 500,
+      "cacheReadInputTokens": 15000,
+      "cacheCreationInputTokens": 10000,
+      "costUSD": 0
+    }
+  },
+  "totalSessions": 7,
+  "totalMessages": 120
+}

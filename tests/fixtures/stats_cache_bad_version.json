@@ -1,0 +1,15 @@
+{
+  "version": 999,
+  "lastComputedDate": "2026-07-24",
+  "modelUsage": {
+    "claude-opus-4-8": {
+      "inputTokens": 100,
+      "outputTokens": 1000,
+      "cacheReadInputTokens": 50000,
+      "cacheCreationInputTokens": 0,
+      "costUSD": 0
+    }
+  },
+  "totalSessions": 1,
+  "totalMessages": 10
+}

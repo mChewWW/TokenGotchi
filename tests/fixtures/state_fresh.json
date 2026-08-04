@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "stage": "egg",
+  "hunger": 100,
+  "last_hunger_update": "2026-07-24T12:00:00",
+  "bits_balance": 0,
+  "echoes_balance": 0,
+  "bits_earned_total": 0,
+  "echoes_earned_total": 0,
+  "daily_feeding_log": [],
+  "equipped_hat": null,
+  "dormant": false,
+  "dormancy_start": null,
+  "baseline_tokens": {
+    "output_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_creation_tokens": 0
+  }
+}

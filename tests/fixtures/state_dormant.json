@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "stage": "baby",
+  "hunger": 0,
+  "last_hunger_update": "2026-07-23T00:00:00",
+  "bits_balance": 5,
+  "echoes_balance": 2,
+  "bits_earned_total": 60,
+  "echoes_earned_total": 3,
+  "daily_feeding_log": [
+    "2026-07-17",
+    "2026-07-18",
+    "2026-07-19",
+    "2026-07-20",
+    "2026-07-21"
+  ],
+  "equipped_hat": null,
+  "dormant": true,
+  "dormancy_start": "2026-07-23T12:00:00",
+  "baseline_tokens": {
+    "output_tokens": 1000,
+    "cache_read_tokens": 50000,
+    "cache_creation_tokens": 10000
+  }
+}
