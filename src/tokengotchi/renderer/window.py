@@ -12,25 +12,33 @@ fall straight through and fire underneath.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import pygame
 
 from ..config import BITS_RATIO
+from ..dialogue.context import resolve_context
+from ..dialogue.event_lines import PURCHASE_LINES
+from ..dialogue.moment_lines import MOMENT_LINES
+from ..dialogue.scheduler import DialogueScheduler
 from ..engine import food as foodmenu
-from ..engine.creature import EGG_TO_BABY_BITS
+from ..engine.creature import EGG_TO_BABY_BITS, hunger_state
 from . import easing, ink, metal, theme, uikit
 from . import device
+from . import fields as fieldsmod
+from . import field_emblems
 from . import shop_panel as shoppanel
 from . import skins as skinmod
 from ..shop import catalogue as shopcat
-from .background import Starfield
+from .dialogue_panel import DialoguePanel
 from .eat_animation import EatAnimation
 from .privacy import draw_privacy_notice
 from .food_panel import FoodPanel
 from .rate_panel import RatePanel
 from .shop_panel import ShopPanel
 from .sprites import draw_creature
+from .taskbar_flash import flash_taskbar
 
 WINDOW_W = 400
 WINDOW_H = 450
@@ -45,6 +53,12 @@ CREATURE_AREA_H = WINDOW_H - HEADER_H - ACTION_H - HUD_H
 # stage reads as 96% empty; magnified, the creature is the subject and the
 # frame around it becomes an object.
 PET_SCALE = 1.7
+
+# Bands in which a cosmetic purchase is diverted to the guilt pool rather
+# than the cheerful per-kind one (contract v17, "the starving-purchase
+# diversion"). Spelled here rather than derived from `hunger_state` so the
+# emotional cut-off for this one behaviour is visible and movable on its own.
+_STARVING_BANDS: frozenset[str] = frozenset({"distressed", "horror", "dying"})
 
 # Vertical room ABOVE the creature for headwear.
 #
@@ -100,8 +114,17 @@ class GameWindow:
         self._font_large = uikit.font(theme.FONT_TITLE, bold=True)
         self._quit = False
 
-        self._starfield = Starfield(WINDOW_W, WINDOW_H)
+        # The field instance is resolved from `game_state.field_slot`, which
+        # isn't available yet at construction — created lazily on first use
+        # once the equipped slot is known, and swapped whenever it changes.
+        self._field = None
+        self._field_id: str | None = None
         self._last_tick: float = time.monotonic()
+        # Cache of rendered shop-row field swatches, keyed by field id. A field
+        # is a particle system that must run in its native coordinate space, so
+        # a swatch is rendered once and reused rather than rebuilt per row per
+        # frame.
+        self._field_thumbs: dict[str, "pygame.Surface"] = {}
 
         self._anim_frame: int = 0
         self._last_anim_toggle: float = time.monotonic()
@@ -111,6 +134,24 @@ class GameWindow:
         self._rates = RatePanel()
         self._food = FoodPanel()
         self._eat = EatAnimation()
+        self._dialogue = DialoguePanel()
+        self._dialogue_scheduler = DialogueScheduler()
+        # ONE pending event line, not a queue. The shop is open at the moment
+        # of purchase and `_dialogue_visible` is False while it is, so a line
+        # shown then is drawn to nobody — it is held here and delivered on
+        # the frame the shop closes (contract v17 constraint 2). A second
+        # purchase overwrites the first rather than stacking: the codebase
+        # stance is "pause, don't queue", and three popups fired back-to-back
+        # after a shopping trip is a notification backlog, not a pet.
+        self._pending_event: str | None = None
+        # The bag_key of the currently-parked line, so `_park` can protect a
+        # once-ever milestone (hatch/adult) from being overwritten by a
+        # later, repeatable purchase line before it is ever shown (contract
+        # v18 — the "creature's first words can be destroyed" bug).
+        self._pending_key: str | None = None
+        # Local calendar day of the last ambient line, for the day-first
+        # moment pools. Session-scoped on purpose — see `_ambient_line`.
+        self._last_line_day = None
         self._rate_rect = None
         self._tweens = easing.Tweens()
 
@@ -199,11 +240,13 @@ class GameWindow:
         peek_screen = peek if (peek_item and peek_item.kind is _IK.SCREEN) else None
         peek_shell = peek if (peek_item and peek_item.kind is _IK.SHELL) else None
         peek_hat = peek if (peek_item and peek_item.kind is _IK.HAT) else None
+        peek_field = peek if (peek_item and peek_item.kind is _IK.FIELD) else None
 
         tab_kind = shoppanel.TABS[self._shop._tab][1] if peek_default else None
         clr_screen = peek_default and tab_kind is _IK.SCREEN
         clr_shell = peek_default and tab_kind is _IK.SHELL
         clr_hat = peek_default and tab_kind is _IK.HAT
+        clr_field = peek_default and tab_kind is _IK.FIELD
 
         skin = skinmod.get(
             None if clr_screen
@@ -221,16 +264,69 @@ class GameWindow:
         if hasattr(stage, "value"):
             stage = stage.value
         stage = str(stage)
+        dormant = getattr(game_state.creature, "dormancy_start", None) is not None
 
         now = time.monotonic()
         dt = min(0.1, now - self._last_tick)   # clamp: a debugger pause or a
         self._last_tick = now                  # window drag must not teleport
-        self._starfield.update(dt)             # every tween to its end state
+        field_id = (
+            fieldsmod.DEFAULT.id if clr_field
+            else peek_field or getattr(game_state, "field_slot", None)
+            or fieldsmod.DEFAULT.id)
+        if field_id != self._field_id:
+            self._field = fieldsmod.get_field(field_id).cls(WINDOW_W, WINDOW_H)
+            self._field_id = field_id
+        self._field.update(dt)                 # every tween to its end state
         self._shop.update(dt)
         self._rates.update(dt)
         self._food.update(dt)
         self._eat.update(dt)
         self._tweens.update(dt)
+
+        # Dialogue never speaks for an unhatched egg or while DORMANT (contract
+        # v11 point 7), and is suppressed whenever another panel is open so it
+        # never visually collides with FOOD/SHOP/RATES (point 3). The timer
+        # itself pauses rather than accumulates while suppressed, so closing
+        # the other panel doesn't immediately dump a queued popup. Contract
+        # v12 point 3: a popup no longer self-dismisses on a timer, so the
+        # scheduler must ALSO pause (not just re-trigger later) while one is
+        # still pinned open awaiting a click — otherwise a trigger firing
+        # while the current line is unread would be silently dropped only in
+        # spirit, since `is_open` never becomes false to let a fresh draw
+        # replace it anyway. No queueing: "pause, don't queue".
+        dialogue_ok = (
+            self._dialogue_visible(stage, dormant) and not self._dialogue.is_open
+        )
+        band = hunger_state(hunger)
+        if self._pending_event and dialogue_ok:
+            # Deferred delivery. The line was drawn at the instant of the
+            # event (so it reflects the hunger the player bought/fed at, not
+            # whatever it has decayed to by the time the shop animation
+            # finishes closing) and is only SHOWN once there is somebody to
+            # show it to.
+            event_line, self._pending_event = self._pending_event, None
+            self._pending_key = None
+            self._dialogue.show(event_line, band, stage=stage, hunger=hunger,
+                                hat=hat_slot, frame=self._anim_frame)
+            # NO flash_taskbar() HERE, DELIBERATELY (contract v17 constraint
+            # 3). Every event line is a reaction to a click the player just
+            # made, so they are looking at the window: a taskbar flash would
+            # be the app trying to attract the attention it already has. The
+            # omission is not covered by `flash_taskbar`'s own foreground
+            # guard — that guard is a best-effort platform check, and relying
+            # on it would make correct behaviour here an accident of
+            # Windows API availability. Ambient lines still flash (v12).
+        else:
+            new_line = self._ambient_line(dt, band, hunger, bits, game_state,
+                                          dialogue_ok)
+            if new_line:
+                self._dialogue.show(new_line, band, stage=stage, hunger=hunger,
+                                    hat=hat_slot, frame=self._anim_frame)
+                # Fires even if the popup itself is about to be covered by
+                # FOOD/SHOP/RATES this same frame — flashing is decoupled from
+                # drawability (contract v12 point 1). Self-contained and
+                # degrades silently on any failure.
+                flash_taskbar()
 
         if now - self._last_anim_toggle >= self._ANIM_INTERVAL:
             self._anim_frame = 1 - self._anim_frame
@@ -245,6 +341,20 @@ class GameWindow:
             if event.type == pygame.MOUSEMOTION:
                 self._mouse = event.pos
 
+            # Non-exclusive: routed alongside (not instead of) whatever else
+            # handles this event below, so a click that misses the popup's
+            # own rect still falls through to FOOD/SHOP/RATES/main. Gated on
+            # `_dialogue_visible`, re-evaluated per-event (not the earlier
+            # frame-start `dialogue_ok`) because an event earlier in this
+            # same loop may have just opened/closed FOOD/SHOP/RATES.
+            # Deliberately NOT gated on `self._dialogue.is_open` alone: a
+            # pinned-but-hidden-behind-FOOD popup stays `is_open` for as long
+            # as it's covered, and its `_panel_rect` would be stale from the
+            # last frame it was actually drawn — an ungated call here could
+            # spuriously catch a click meant for whatever is now on top.
+            if self._dialogue_visible(stage, dormant):
+                self._dialogue.handle_event(event)
+
             if show_privacy:
                 self._route_privacy(event, triggered)
             elif self._food.is_open:
@@ -256,7 +366,8 @@ class GameWindow:
                     self._shop.handle_event(
                         event, inventory, hat_slot, bits, echoes,
                         getattr(game_state, "screen_slot", None),
-                        getattr(game_state, "shell_slot", None))
+                        getattr(game_state, "shell_slot", None),
+                        getattr(game_state, "field_slot", None))
                 )
             else:
                 self._route_main(event, triggered)
@@ -280,10 +391,10 @@ class GameWindow:
 
         inner = device.begin_screen(skin)
         # Content on its own layer so a quantising skin (DMG, e-ink) reduces
-        # the pet and stars without crushing them into the background.
+        # the pet and field without crushing them into the background.
         content = pygame.Surface(inner.get_size(), pygame.SRCALPHA)
-        if skin.stars:
-            self._starfield.draw(content)
+        if skin.background:
+            self._field.draw(content)
         self._draw_creature(content, game_state, stage, hunger, skin)
         if skin.palette:
             content = skinmod.quantise_layer(content, skin.palette, skin.dither)
@@ -311,7 +422,17 @@ class GameWindow:
                         stage=stage, hunger=hunger,
                         offset=device.screen_rect().topleft,
                         screen_slot=getattr(game_state, "screen_slot", None),
-                        shell_slot=getattr(game_state, "shell_slot", None))
+                        shell_slot=getattr(game_state, "shell_slot", None),
+                        field_slot=getattr(game_state, "field_slot", None))
+        # Never alongside FOOD/SHOP/RATES — re-checked here (not the earlier
+        # `dialogue_ok`) because this frame's event routing above may have
+        # just opened one of them. `update()` is gated on the same re-check
+        # so a popup's lifecycle pauses (rather than silently running out
+        # off-screen) for every frame another panel covers it.
+        dialogue_visible = self._dialogue_visible(stage, dormant)
+        if dialogue_visible:
+            self._dialogue.update(dt)
+            self._dialogue.draw(inner, offset=device.screen_rect().topleft)
         device.end_screen(surf, inner, skin, shell)
 
         self._draw_controls(surf, bits, echoes, stage, shell)
@@ -356,7 +477,135 @@ class GameWindow:
         """
         self._eat.start(food_id, hunger_before, hunger_after)
 
+    # ── Event dialogue (contract v17 Layer 3) ───────────────────────────────
+    #
+    # Both hooks are called by `main.py` AFTER it has checked the action's
+    # `bool` return, so nothing here ever congratulates the player on
+    # something that did not happen. They only ever draw a line and park it;
+    # `render_frame` owns when it is actually spoken.
+
+    def note_purchase(self, item_id: str, *, hunger: float,
+                      first_of_kind: bool) -> None:
+        """A cosmetic purchase SUCCEEDED. Park the line it earns.
+
+        Pool precedence, first match wins:
+
+        1. `starving` — the pet is in distressed/horror/dying. Replaces the
+           cheerful pool entirely, whatever was bought, and outranks even
+           `first_of_kind`: a first hat bought over a starving creature is
+           not a milestone, it is the diversion's whole point. This is the
+           contract's headline content behaviour.
+        2. `first_of_kind` — nothing of this ItemKind was owned before now.
+        3. the per-kind pool — a hat, a screen, a shell and a field are
+           mechanically different things and the writing carries that.
+        4. `generic` — a sixth ItemKind added to the catalogue later must
+           degrade to a plausible line, never to silence.
+        """
+        if hunger_state(hunger) in _STARVING_BANDS:
+            key = "starving"
+        elif first_of_kind:
+            key = "first_of_kind"
+        else:
+            item = shopcat.get(item_id)
+            kind = item.kind.value if item is not None else None
+            key = kind if kind in PURCHASE_LINES else "generic"
+        self._park(f"purchase:{key}", PURCHASE_LINES.get(key, ()))
+
+    def note_moment(self, key: str) -> None:
+        """A non-purchase moment happened (hatch, adult, wake, a feed).
+
+        The caller owns which key — it is the only place that can see the
+        edge, e.g. that a stage change was a dormancy recovery rather than
+        an advance. An unknown key is silence, matching the scheduler's own
+        failure mode.
+        """
+        self._park(f"moment:{key}", MOMENT_LINES.get(key, ()))
+
+    # Once-ever milestones: fire a single time per save and never again
+    # (`EGG→BABY` and `BABY→ADULT` are one-way). A repeatable purchase line
+    # landing in the single pending slot before one of these is shown would
+    # destroy the creature's first/coming-of-age words permanently — the slot
+    # is last-write-wins. These keys are protected in `_park`.
+    _PROTECTED_KEYS = frozenset({"moment:hatch", "moment:adult"})
+
+    def _park(self, bag_key: str, pool: tuple[str, ...]) -> None:
+        """Draw an event line now, hold it for the first frame it is visible.
+
+        A failed draw (an empty pool) leaves any previously parked line
+        alone: coalescing to the most recent event should not be able to
+        silence a line that was already earned.
+
+        A protected once-ever milestone already sitting in the slot is NOT
+        overwritten by a later non-protected event (contract v18 bug fix):
+        losing "hello, world" to a hat purchase means it is gone for good.
+        """
+        if (self._pending_key in self._PROTECTED_KEYS
+                and bag_key not in self._PROTECTED_KEYS):
+            return
+        line = self._dialogue_scheduler.draw_immediate(bag_key, pool)
+        if line:
+            self._pending_event = line
+            self._pending_key = bag_key
+
+    def _ambient_line(self, dt: float, band: str, hunger: float, bits: int,
+                      game_state: Any, dialogue_ok: bool) -> str | None:
+        """The timer-driven line: context-gated pool, else the general pool.
+
+        `rates.last_token_at` is the real player-activity signal and the only
+        new thing threaded down here; `game_state` is duck-typed (the
+        renderer stub has no `rates` at all), so it is read defensively and
+        a missing one simply means no context — the general pool, which is
+        honest unconditionally, takes every frame.
+
+        THE DAY-FIRST SUBSTITUTION. `day_first_*` replaces the ambient line
+        only on a calendar rollover this session has actually WITNESSED —
+        never on the first line after a launch. Without a persisted
+        last-spoken date (adding one is a schema change this contract does
+        not authorise) "first line of the day" cannot be distinguished from
+        "first line since you reopened the app", and the pool says things
+        like "it followed me across midnight" that would be plainly false
+        the fifth time the app was started that afternoon. Rarely-true is
+        acceptable; often-false is the exact defect v17 exists to remove.
+        """
+        rates = getattr(game_state, "rates", None)
+        context = resolve_context(
+            hunger=hunger,
+            bits=bits,
+            last_token_at=getattr(rates, "last_token_at", None),
+            now=datetime.now(timezone.utc),
+        )
+        line = self._dialogue_scheduler.update(dt, band, dialogue_ok, context)
+        if line is None:
+            return None
+
+        # Local, not UTC: the player's midnight is the one the line is about.
+        today = datetime.now(timezone.utc).astimezone().date()
+        if self._last_line_day is not None and today != self._last_line_day:
+            key = ("day_first_fine" if band in ("healthy", "sad")
+                   else "day_first_hungry")
+            rollover = self._dialogue_scheduler.draw_immediate(
+                f"moment:{key}", MOMENT_LINES.get(key, ()))
+            if rollover:
+                line = rollover
+        self._last_line_day = today
+        return line
+
     # ── Event layers ────────────────────────────────────────────────────────
+
+    def _dialogue_visible(self, stage: str, dormant: bool) -> bool:
+        """Whether the dialogue popup is currently drawable/clickable.
+
+        True whenever the creature can speak at all (hatched, not dormant)
+        and FOOD/SHOP/RATES aren't covering it — independent of whether a
+        line is actually pinned open (`self._dialogue.is_open`). The
+        scheduler's own pause gate additionally checks `is_open` on top of
+        this, since a pinned popup must suppress new triggers even while
+        hidden behind FOOD/SHOP/RATES (not visible, but not dismissed).
+        """
+        return (
+            stage.lower() != "egg" and not dormant
+            and not (self._food.is_open or self._shop.is_open or self._rates.is_open)
+        )
 
     def _route_privacy(self, event, triggered) -> None:
         # The rect is computed during draw, so on the very first frame it is
@@ -542,6 +791,40 @@ class GameWindow:
         device.draw_sparkle(surf, shell, time.monotonic(),
                             suppress=self._shop.is_open)
 
+    def _field_thumb(self, field_id: str) -> "pygame.Surface":
+        """A per-field shop-row swatch, rendered once and cached.
+
+        A FIELD is the animated backdrop, so — like SHELL and SCREEN — it
+        cannot preview as the pet: every field row would show an identical
+        creature (the original bug). Nor does it preview as a scaled-down still
+        of the live field: a field's particles are sparse, and shrunk to 36px
+        they read as low-res noise rather than as the cosmetic (the human's
+        follow-up complaint). Instead each field previews as a single clean
+        ICONIC EMBLEM of what it is — a heart for Hearts, a skull for Skulls, a
+        cloud-and-bolt for Storm — drawn as crisp vector art in
+        `field_emblems.py` (see there for the supersample-then-scale detail).
+
+        The emblem sits over the field's characteristic base so the swatch
+        still reads as that cosmetic's colour world: the Storm cloud-slate for
+        Storm, the dark night sky for the rest.
+        """
+        cached = self._field_thumbs.get(field_id)
+        if cached is not None:
+            return cached
+
+        n = shoppanel.ICON
+        base = (fieldsmod._STORM_CLOUD_BASE if field_id == "field_aurora"
+                else fieldsmod._NIGHT_BG)
+        thumb = pygame.Surface((n, n))
+        thumb.fill(base)
+        emblem = field_emblems.render(field_id, n)
+        if emblem is not None:
+            thumb.blit(emblem, (0, 0))
+        # A subtle edge so the swatch reads as a framed cell like the others.
+        pygame.draw.rect(thumb, theme.BORDER_SUBTLE, (0, 0, n, n), 1)
+        self._field_thumbs[field_id] = thumb
+        return thumb
+
     def _preview(self, dest, x: int, y: int, item_id: str) -> None:
         """Shop-row thumbnail.
 
@@ -549,7 +832,8 @@ class GameWindow:
         would be a picture of a display drawn on that same display, under the
         active skin's own scanlines — and every screen row would show an
         identical pet. So a screen previews as a swatch of ITSELF: its glass
-        colour, its pattern, its phosphor.
+        colour, its pattern, its phosphor. A FIELD previews as a swatch of its
+        own particles — see `_field_thumb`.
         """
         from ..shop.catalogue import ItemKind  # local: avoids an import cycle
         item = shopcat.get(item_id)
@@ -604,6 +888,9 @@ class GameWindow:
             pygame.draw.rect(cell, sk.phosphor, (4, n - 11, n - 8, 4))
             pygame.draw.rect(cell, sk.edge, (0, 0, n, n), 1)
             dest.blit(cell, (x, y))
+            return
+        if item is not None and item.kind is ItemKind.FIELD:
+            dest.blit(self._field_thumb(item_id), (x, y))
             return
 
         n = shoppanel.ICON

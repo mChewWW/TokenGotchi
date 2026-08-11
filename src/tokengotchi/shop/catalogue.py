@@ -62,6 +62,7 @@ class ItemKind(str, Enum):
     HAT = "hat"                 # bought once, then owned and equippable
     SCREEN = "screen"           # a display skin for the device itself
     SHELL = "shell"             # a case skin for the device body
+    FIELD = "field"             # a background particle effect
 
 
 @dataclass(frozen=True)
@@ -152,6 +153,15 @@ _SHELLS = (
     ("shell_true_gold", "True Gold", "Struck, not painted.", Rarity.LEGENDARY),
 )
 
+_FIELDS = (
+    ("field_hearts", "Hearts", "Warm and a little sentimental.", Rarity.UNCOMMON),
+    ("field_skulls", "Skulls", "Friendly bones. Nothing to fear.", Rarity.UNCOMMON),
+    ("field_snow", "Snow", "Quiet, and always falling.", Rarity.UNCOMMON),
+    ("field_embers", "Embers", "Rising light, never quite out.", Rarity.EPIC),
+    ("field_petals", "Petals", "Drifting on a wind that isn't there.", Rarity.EPIC),
+    ("field_aurora", "Storm", "Rain, and the sky breaking open.", Rarity.LEGENDARY),
+)
+
 
 def _mk(rows, kind):
     """Build a kind's items, ordered by tier and stable within it.
@@ -172,7 +182,8 @@ def _mk(rows, kind):
 CATALOGUE = tuple(i for i in CATALOGUE if i.kind is ItemKind.CONSUMABLE)
 CATALOGUE = (CATALOGUE + _mk(_HATS, ItemKind.HAT)
              + _mk(_SCREENS, ItemKind.SCREEN)
-             + _mk(_SHELLS, ItemKind.SHELL))
+             + _mk(_SHELLS, ItemKind.SHELL)
+             + _mk(_FIELDS, ItemKind.FIELD))
 
 _BY_ID: dict[str, Item] = {item.id: item for item in CATALOGUE}
 

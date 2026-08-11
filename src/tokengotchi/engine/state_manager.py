@@ -32,7 +32,7 @@ _WRITE_LOCK = threading.Lock()
 
 STATE_DIR = Path.home() / ".tokengotchi"
 STATE_FILE = STATE_DIR / "state.json"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _utcnow() -> datetime:
@@ -115,6 +115,9 @@ class GameState(BaseModel):
     # Equipped case skin. Same reasoning as screen_slot: the device is the
     # player's, not the creature's.
     shell_slot: Optional[str] = None
+    # Equipped background field (particle effect). Same reasoning as
+    # screen_slot/shell_slot: the device is the player's, not the creature's.
+    field_slot: Optional[str] = None
     lifetime_bits_earned: int = 0
     first_launch: datetime = Field(default_factory=_utcnow)
     last_launch: datetime = Field(default_factory=_utcnow)
@@ -219,6 +222,10 @@ class StateManager:
             Progression is deliberately preserved: `stage` is untouched, and
             BABY → ADULT is gated on distinct feeding days rather than on BITS,
             so zeroing lifetime_bits_earned costs the player nothing.
+
+        v4 -> v5 adds `field_slot`. No migration branch is needed: no model
+        sets `extra`, so an older file loads with the field defaulted to
+        None. The bump is documentary.
         """
         # v2 -> v3 adds `screen_slot`. No migration branch is needed: no model
         # sets `extra`, so a v2 file loads with the field defaulted to None.

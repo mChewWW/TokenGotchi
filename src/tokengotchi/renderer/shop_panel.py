@@ -46,6 +46,11 @@ def _is_shell(item_id: str) -> bool:
     return item is not None and item.kind is ItemKind.SHELL
 
 
+def _is_field(item_id: str) -> bool:
+    item = catalogue.get(item_id)
+    return item is not None and item.kind is ItemKind.FIELD
+
+
 def hat_hidden_reason(stage: str, hunger: float) -> str | None:
     """Why a hat would not be drawn right now, or None if it would be.
 
@@ -104,6 +109,7 @@ TABS: tuple[tuple[str, object], ...] = (
     ("HATS", ItemKind.HAT),
     ("SCREEN", ItemKind.SCREEN),
     ("CASE", ItemKind.SHELL),
+    ("FIELD", ItemKind.FIELD),
 )
 
 
@@ -264,7 +270,7 @@ class ShopPanel:
 
     @staticmethod
     def state_of(item, inventory, hat_slot, bits, echoes,
-                 screen_slot=None, shell_slot=None) -> ItemState:
+                 screen_slot=None, shell_slot=None, field_slot=None) -> ItemState:
         """Which of the four states this item is in.
 
         Two slots, not one: a hat is worn by the creature, a screen is fitted
@@ -273,7 +279,8 @@ class ShopPanel:
         """
         if item.is_ownable and item.id in inventory:
             worn = (screen_slot if item.kind is ItemKind.SCREEN else
-                    shell_slot if item.kind is ItemKind.SHELL else hat_slot)
+                    shell_slot if item.kind is ItemKind.SHELL else
+                    field_slot if item.kind is ItemKind.FIELD else hat_slot)
             return ItemState.EQUIPPED if worn == item.id else ItemState.OWNED
         have = bits if item.currency is Currency.BITS else echoes
         return ItemState.AFFORDABLE if have >= item.cost else ItemState.UNAFFORDABLE
@@ -281,7 +288,8 @@ class ShopPanel:
     # ── Input ───────────────────────────────────────────────────────────────
 
     def handle_event(self, event, inventory, hat_slot, bits, echoes,
-                     screen_slot=None, shell_slot=None) -> list[str]:
+                     screen_slot=None, shell_slot=None,
+                     field_slot=None) -> list[str]:
         """Consume one event. Returns action ids.
 
         The caller must route events here FIRST and not fall through when the
@@ -346,14 +354,15 @@ class ShopPanel:
                 kind = TABS[self._tab][1]
                 out.append({ItemKind.HAT: "unequip",
                             ItemKind.SCREEN: "screen:",
-                            ItemKind.SHELL: "shell:"}[kind])
+                            ItemKind.SHELL: "shell:",
+                            ItemKind.FIELD: "field:"}[kind])
                 return out
 
             item = catalogue.get(was)
             if item is None:
                 return out
             st = self.state_of(item, inventory, hat_slot, bits, echoes,
-                               screen_slot, shell_slot)
+                               screen_slot, shell_slot, field_slot)
             if st is ItemState.UNAFFORDABLE:
                 # Never a silent dead click: reject visibly and say why.
                 self._reject[was] = 0.0
@@ -365,7 +374,8 @@ class ShopPanel:
                 out.append(self._equip_action(was))
             else:  # EQUIPPED -> toggle it back off
                 out.append("screen:" if _is_screen(was)
-                           else "shell:" if _is_shell(was) else "unequip")
+                           else "shell:" if _is_shell(was)
+                           else "field:" if _is_field(was) else "unequip")
         return out
 
     @staticmethod
@@ -374,6 +384,8 @@ class ShopPanel:
             return f"screen:{item_id}"
         if _is_shell(item_id):
             return f"shell:{item_id}"
+        if _is_field(item_id):
+            return f"field:{item_id}"
         return f"equip:{item_id}"
 
     def _hit(self, pos) -> str | None:
@@ -398,7 +410,7 @@ class ShopPanel:
     def draw(self, dest, inventory, hat_slot, bits, echoes, draw_preview,
              stage: str = "", hunger: float = 100.0,
              offset: tuple[int, int] = (0, 0),
-             screen_slot=None, shell_slot=None) -> None:
+             screen_slot=None, shell_slot=None, field_slot=None) -> None:
         """Render the modal. `draw_preview(surface, x, y, hat)` paints a small
         live creature wearing `hat` — showing the pet in the item beats an
         isolated icon, and costs nothing since sprites are programmatic."""
@@ -428,7 +440,8 @@ class ShopPanel:
         body_h = HEADER_H + TAB_H + PAGE_SIZE * ROW_H_PAGED + FOOTER_H + theme.SPACE_2
         panel = pygame.Surface((PANEL_W, body_h), pygame.SRCALPHA)
         self._paint_body(panel, items, inventory, hat_slot, bits, echoes,
-                         draw_preview, p, stage, hunger, screen_slot, shell_slot)
+                         draw_preview, p, stage, hunger, screen_slot, shell_slot,
+                         field_slot)
 
         # Scale from the trigger, overshooting slightly on the way in.
         if self.phase is Phase.OPENING:
@@ -494,7 +507,7 @@ class ShopPanel:
 
     def _paint_body(self, surf, items, inventory, hat_slot, bits, echoes,
                     draw_preview, p, stage="", hunger=100.0,
-                    screen_slot=None, shell_slot=None) -> None:
+                    screen_slot=None, shell_slot=None, field_slot=None) -> None:
         w, h = surf.get_size()
         uikit.draw_panel(
             surf, pygame.Rect(0, 0, w, h),
@@ -567,7 +580,7 @@ class ShopPanel:
             )
             self._paint_row(surf, row, item, inventory, hat_slot, bits, echoes,
                             draw_preview, local * (0.25 + 0.75 * fade),
-                            screen_slot, shell_slot)
+                            screen_slot, shell_slot, field_slot)
 
         # If a hat would not render right now, say so rather than quietly
         # taking 15 ECHOES for something invisible.
@@ -630,13 +643,13 @@ class ShopPanel:
 
     def _paint_row(self, surf, rect, item, inventory, hat_slot, bits, echoes,
                    draw_preview, reveal, screen_slot=None,
-                   shell_slot=None) -> None:
+                   shell_slot=None, field_slot=None) -> None:
         if item == DEFAULT_ID:
             self._paint_default_row(surf, rect, hat_slot, screen_slot,
-                                    shell_slot, reveal)
+                                    shell_slot, field_slot, reveal)
             return
         st = self.state_of(item, inventory, hat_slot, bits, echoes,
-                           screen_slot, shell_slot)
+                           screen_slot, shell_slot, field_slot)
         hovered = self._hover == item.id and self.accepts_input
         pressed = self._pressed == item.id
 
@@ -693,12 +706,12 @@ class ShopPanel:
         self._paint_badge(surf, rect, item, st, bits, echoes)
 
     def _paint_default_row(self, surf, rect, hat_slot, screen_slot,
-                           shell_slot, reveal) -> None:
+                           shell_slot, field_slot, reveal) -> None:
         """The 'no cosmetic' option, as a selectable thing rather than an
         un-equip gesture hidden inside the equipped item."""
         kind = TABS[self._tab][1]
         current = {ItemKind.HAT: hat_slot, ItemKind.SCREEN: screen_slot,
-                   ItemKind.SHELL: shell_slot}[kind]
+                   ItemKind.SHELL: shell_slot, ItemKind.FIELD: field_slot}[kind]
         active = current in (None, "")
         hovered = self._hover == DEFAULT_ID and self.accepts_input
 

@@ -49,19 +49,21 @@ from tokengotchi.config import (
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
+from tokengotchi.engine import food as foodmenu
 from tokengotchi.engine import rates as raterules
 from tokengotchi.engine.actions import (
     feed_item,
     BITS_PER_FEED,
     FEED_COST,
     equip,
+    equip_field,
     equip_screen,
     equip_shell,
     feed,
     purchase,
     unequip,
 )
-from tokengotchi.engine.creature import Creature
+from tokengotchi.engine.creature import Creature, Stage, hunger_state
 from tokengotchi.engine.state_manager import (
     DailyUsage,
     RatePoint,
@@ -70,12 +72,14 @@ from tokengotchi.engine.state_manager import (
     StateManager,
 )
 from tokengotchi.engine.wallet import Wallet
+from tokengotchi.dialogue.rarity import FeedGate
 from tokengotchi.reader.stats_reader import (
     SchemaVersionError,
     StatsReader,
     TokenSnapshot,
 )
 from tokengotchi.reader.watcher import StatsWatcher
+from tokengotchi.shop import catalogue as shopcat
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +163,25 @@ class _HeadlessWindow:
     def __init__(self) -> None:
         self._quit = False
 
+    # The event-dialogue hooks exist here purely for parity with GameWindow.
+    # `_note_event` below would skip them anyway, but a window that silently
+    # lacks half the interface is a trap for the next person to extend it.
+    def note_purchase(self, item_id: str, *, hunger: float,
+                      first_of_kind: bool) -> None:
+        pass
+
+    def note_moment(self, key: str) -> None:
+        pass
+
+    # Same parity argument, and this one has teeth: the `eat:` branch calls
+    # `start_eat_animation` UNGUARDED, unlike the hooks above which go through
+    # `_note_event`'s getattr check. Unreachable from this class only because
+    # `render_frame` returns no actions — but any stub window that does emit an
+    # `eat:` would raise AttributeError inside the render loop.
+    def start_eat_animation(self, food_id: str, hunger_before: float,
+                            hunger_after: float) -> None:
+        pass
+
     def should_quit(self) -> bool:
         return self._quit
 
@@ -195,6 +218,110 @@ def _build_game_window() -> object:
     except Exception as exc:
         logger.error("Failed to create GameWindow: %s", exc)
         return _HeadlessWindow()
+
+
+# ---------------------------------------------------------------------------
+# Event-dialogue hooks (direction contract v17, Layer 3)
+# ---------------------------------------------------------------------------
+#
+# There is no event bus, and this contract does not build one: the three
+# helpers below are the entire plumbing. They are called from the action loop
+# ONLY on a confirmed success, because every action function returns a `bool`
+# that the loop used to discard wholesale — hooking the `buy:` verb without
+# checking it would congratulate the player on purchases that failed for lack
+# of funds (contract v17 constraint 4).
+#
+# EQUIPPING IS SILENT, deliberately. Purchase only, per the human's resolution
+# of the contract's Open Question 3 — so `equip`/`equip_screen`/`equip_shell`/
+# `equip_field` keep discarding their return, and that is now a decision
+# rather than an oversight.
+
+
+def _note_event(window: object, method: str, *args, **kwargs) -> None:
+    """Fire a dialogue hook if the window has one, and never let it matter.
+
+    Dialogue is decoration, never a gate (contract v11): a window
+    implementation without the hook — the headless stub, a test double, the
+    renderer stub — must cost the caller nothing, and a failure inside line
+    selection must not be able to take down the frame that fed the pet.
+    """
+    fn = getattr(window, method, None)
+    if fn is None:
+        return
+    try:
+        fn(*args, **kwargs)
+    except Exception as exc:      # pragma: no cover - defensive only
+        logger.debug("Dialogue hook %s failed: %s", method, exc)
+
+
+def _note_feed(window: object, before: float, after: float,
+               wasted: float, *, gate: FeedGate, first_feed: bool) -> None:
+    """Pick the reaction a landed feed earns, then rarity-gate it.
+
+    THE LANDED SIGNAL IS THE CALLER'S `bool`, not a band comparison. Comparing
+    the band before and after was the obvious-looking alternative and it is
+    wrong twice over: a feed that lands entirely inside one band changes
+    nothing to compare, and a feed can fail (insufficient BITS, an EGG) while
+    time decay moves the band on the very same frame. The bool is exact.
+
+    Which pool then splits on how bad things were BEFORE the food landed,
+    because the same feed means two different things — and on the overshoot,
+    which the food panel already showed the player before they clicked.
+
+    THE GATE SITS HERE, BEFORE PARKING (contract v18). `window._park` holds one
+    last-write-wins slot; a delivery-side gate would let a to-be-discarded line
+    first evict an already-earned one and then discard itself — double silence.
+    Gating before the hook fires means a suppressed feed never touches the slot.
+    `first_feed` (the once-per-install discovery moment) and a `dying`-band
+    rescue always speak.
+    """
+    if after > 100.0:
+        # Only the Golden Apple's 125 cap can reach here.
+        key = "overfed"
+    elif wasted > 0.0:
+        key = "fed_wasted"
+    elif hunger_state(before) in ("distressed", "horror", "dying"):
+        key = "fed_hungry"
+    else:
+        key = "fed_full"
+    rescue = hunger_state(before) == "dying"
+    if not gate.allow(key, first_feed=first_feed, rescue=rescue):
+        return
+    _note_event(window, "note_moment", key)
+
+
+def _note_stage_change(window: object, prev: Stage, current: Stage) -> None:
+    """Distinguish a real advance from a dormancy recovery.
+
+    `creature.stage is not prev_stage` is NOT a stage advance on its own
+    (contract v17 constraint 7). `Creature.exit_dormancy` restores the
+    pre-dormant stage on the feed that revives the pet, so DORMANT -> BABY
+    and DORMANT -> ADULT trip exactly the same inequality — a hatch line
+    gated on the bare comparison would fire on every single wake.
+
+    The edges separate cleanly on the PREVIOUS stage, which the loop captures
+    before the action dispatch and which therefore still reads DORMANT on the
+    frame the reviving feed is applied. `exit_dormancy` is only ever reached
+    through `feed`/`feed_item`, so there is no other path that could reach a
+    wake without passing through here first.
+    """
+    if prev is Stage.DORMANT:
+        _note_event(window, "note_moment", "wake_dormant")
+    elif prev is Stage.EGG and current is Stage.BABY:
+        _note_event(window, "note_moment", "hatch")
+    elif prev is Stage.BABY and current is Stage.ADULT:
+        _note_event(window, "note_moment", "adult")
+    # -> DORMANT has no pool and gets none: dialogue is silenced entirely
+    # while dormant, so a line fired on the way in could never be read.
+
+
+def _owns_kind(inventory: list[str], kind) -> bool:
+    """True if anything already owned shares this item's ItemKind."""
+    for owned_id in inventory:
+        owned = shopcat.get(owned_id)
+        if owned is not None and owned.kind is kind:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +600,9 @@ def main(
     # -----------------------------------------------------------------------
     # 6. Main loop — 30 fps
     # -----------------------------------------------------------------------
+    # Feed-dialogue rarity gate (contract v18). Session-scoped: cadence starts
+    # fresh each launch and there is no schema field to persist the counter.
+    feed_gate = FeedGate()
     try:
         while not window.should_quit():  # type: ignore[union-attr]
             now = datetime.now(timezone.utc)
@@ -505,12 +635,36 @@ def main(
                         # feed at all.
                         spend = FEED_COST if wallet.bits >= FEED_COST else wallet.bits
                         if spend >= BITS_PER_FEED:
-                            feed(creature, wallet, bits_to_spend=spend)
+                            hunger_before = creature.hunger
+                            # Read BEFORE the feed: feed() appends today to the
+                            # log, so asking afterwards always answers "not the
+                            # first". The once-per-install discovery moment.
+                            first_feed = not creature.daily_feeding_log
+                            if feed(creature, wallet, bits_to_spend=spend):
+                                # `feed()` clamps at HUNGER_MAX and wastes
+                                # nothing measurable, so no overshoot arg.
+                                _note_feed(window, hunger_before,
+                                           creature.hunger, 0.0,
+                                           gate=feed_gate,
+                                           first_feed=first_feed)
                         app.mark_dirty()
                     elif verb == "buy":
-                        purchase(wallet, game_state.inventory, arg)
+                        # First-of-kind has to be read BEFORE the purchase —
+                        # `purchase()` appends to this same list on success,
+                        # so asking afterwards always answers "already owned".
+                        _item = shopcat.get(arg)
+                        _first = (_item is not None
+                                  and not _owns_kind(game_state.inventory,
+                                                     _item.kind))
+                        if purchase(wallet, game_state.inventory, arg):
+                            _note_event(window, "note_purchase", arg,
+                                        hunger=creature.hunger,
+                                        first_of_kind=_first)
                         app.mark_dirty()
                     elif verb == "equip":
+                        # Return deliberately discarded: equipping is silent
+                        # (contract v17, Open Question 3 — purchase only), and
+                        # the same goes for the three slot verbs below.
                         equip(creature, game_state.inventory, arg)
                         app.mark_dirty()
                     elif verb == "shell":
@@ -522,6 +676,10 @@ def main(
                         equip_screen(game_state, game_state.inventory,
                                      arg or None)
                         app.mark_dirty()
+                    elif verb == "field":
+                        # "field:<id>" fits a background, "field:" clears it
+                        equip_field(game_state, game_state.inventory, arg or None)
+                        app.mark_dirty()
                     elif action == "unequip":
                         unequip(creature)
                         app.mark_dirty()
@@ -530,9 +688,20 @@ def main(
                     elif action.startswith("eat:"):
                         food_id = action.split(":", 1)[1]
                         hunger_before = creature.hunger
+                        # Measured before the feed, against the food's OWN
+                        # cap, exactly as the panel showed it on the row the
+                        # player clicked — so the line and the number they
+                        # read agree.
+                        _food = foodmenu.BY_ID.get(food_id)
+                        _wasted = (foodmenu.waste(_food, hunger_before)
+                                   if _food is not None else 0.0)
+                        first_feed = not creature.daily_feeding_log
                         if feed_item(creature, wallet, food_id):
                             window.start_eat_animation(
                                 food_id, hunger_before, creature.hunger)
+                            _note_feed(window, hunger_before, creature.hunger,
+                                       _wasted, gate=feed_gate,
+                                       first_feed=first_feed)
                         app.mark_dirty()
 
                 _tick_rates(game_state, creature, now)
@@ -541,6 +710,12 @@ def main(
                 creature.check_stage_advance(app.lifetime_bits_earned, now)
                 if creature.stage is not prev_stage:
                     app.mark_dirty()
+                    # Last, so a wake-from-dormancy line COALESCES OVER the
+                    # `fed_*` line the reviving feed just parked a few lines
+                    # above. Coming back from nothing is the bigger event of
+                    # the two, and the window holds one pending line, not a
+                    # queue.
+                    _note_stage_change(window, prev_stage, creature.stage)
 
                 game_state.apply_creature(creature)
                 game_state.apply_wallet(wallet)

@@ -47,7 +47,7 @@ class ScreenSkin:
     alpha: int = 22
     glare: int = 16
     tint: tuple[int, int, int, int] | None = None
-    stars: bool = True
+    background: bool = True
     palette: tuple[Color, ...] | None = None   # quantise target
     dither: float = 0.0
     grain: int = 0
@@ -118,7 +118,7 @@ SKINS: tuple[ScreenSkin, ...] = (
         id="screen_dmg", name="Dot-Matrix LCD", blurb="Four greens. Nothing else.",
         base=(155, 173, 90), edge=(120, 138, 70), phosphor=(35, 50, 24),
         meter=((35, 50, 24), (176, 82, 40), (150, 26, 26)),
-        pattern="grid", alpha=34, glare=8, stars=False,
+        pattern="grid", alpha=34, glare=8, background=False,
         palette=((35, 50, 24), (78, 104, 54), (124, 152, 74), (170, 190, 108)),
         cost=450,
     ),
@@ -151,7 +151,7 @@ SKINS: tuple[ScreenSkin, ...] = (
         id="screen_eink", name="E-Ink", blurb="Matte paper. No backlight.",
         base=(222, 219, 210), edge=(186, 183, 174), phosphor=(38, 36, 34),
         meter=((38, 36, 34), (168, 78, 30), (162, 28, 28)),
-        pattern="none", period=0, alpha=0, glare=3, stars=False,
+        pattern="none", period=0, alpha=0, glare=3, background=False,
         palette=((40, 38, 36), (104, 101, 96), (158, 155, 148), (206, 203, 195)),
         dither=34.0, grain=4, cost=900, rarity_locked=True,
     ),
@@ -355,11 +355,11 @@ def quantise_layer(layer: pygame.Surface, palette, dither: float = 0.0
                    ) -> pygame.Surface:
     """Reduce a transparent content layer to a fixed palette, keeping alpha.
 
-    Applied to the pet and starfield ONLY, never to the composited frame:
-    quantising the whole screen crushes the pet into the background because
-    both map to the same bright level. A DMG draws sprites in its darker
-    greens *on* a light field — the field is not quantised, it is the palette's
-    lightest entry.
+    Applied to the pet and the equipped background field ONLY, never to the
+    composited frame: quantising the whole screen crushes the pet into the
+    background because both map to the same bright level. A DMG draws sprites
+    in its darker greens *on* a light field — the field is not quantised, it
+    is the palette's lightest entry.
     """
     rgb = pygame.surfarray.array3d(layer).astype(np.float32)
     a = pygame.surfarray.array_alpha(layer).copy()

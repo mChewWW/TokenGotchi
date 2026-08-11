@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 import pygame
 
+from ..engine.creature import hunger_state as _hunger_state
+
 # Colour palette
 CREATURE_BASE = (120, 220, 150)   # soft green
 CREATURE_DARK = (60, 140, 80)     # darker green for shading
@@ -117,19 +119,6 @@ PX_SKULL = (224, 214, 196)       # cracked skull bone rim
 
 # Dormancy blend factor (0.0 = no tint, 1.0 = full tint)
 DORMANT_BLEND = 0.55
-
-
-def _hunger_state(hunger: float) -> str:
-    """Return hunger state string from 0-100 float."""
-    if hunger >= 75:
-        return "healthy"
-    if hunger >= 50:
-        return "sad"
-    if hunger >= 25:
-        return "distressed"
-    if hunger >= 10:
-        return "horror"
-    return "dying"
 
 
 def _tint_color(color: tuple[int, int, int], tint: tuple[int, int, int], factor: float) -> tuple[int, int, int]:

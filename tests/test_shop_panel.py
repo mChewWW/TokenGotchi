@@ -285,6 +285,39 @@ class TestCatalogue:
         for item in catalogue.of_kind(ItemKind.SCREEN):
             assert skins.get(item.id).cost == item.cost, item.id
 
+    def test_field_skins_match_the_renderer(self):
+        """Same drift guard as screens/shells — catalogue.py cannot import pygame."""
+        from tokengotchi.renderer import fields
+        from tokengotchi.shop.catalogue import ItemKind
+        shop_ids = {i.id for i in catalogue.of_kind(ItemKind.FIELD)}
+        renderer_ids = {f.id for f in fields.purchasable_fields()}
+        assert shop_ids == renderer_ids, (
+            f"drift — shop-only: {shop_ids - renderer_ids}, "
+            f"renderer-only: {renderer_ids - shop_ids}")
+
+    def test_field_prices_match_the_renderer(self):
+        from tokengotchi.renderer import fields
+        from tokengotchi.shop.catalogue import ItemKind
+        for item in catalogue.of_kind(ItemKind.FIELD):
+            assert fields.get_field(item.id).cost == item.cost, item.id
+
+    def test_field_tab_present_and_equippable(self):
+        """Confirms the FIELD tab and the equip round-trip actually work end
+        to end, not just that the catalogue/renderer registries match."""
+        from tokengotchi.shop.catalogue import ItemKind
+        from tokengotchi.engine.actions import equip_field
+        from tokengotchi.renderer.shop_panel import TABS
+        assert ("FIELD", ItemKind.FIELD) in TABS
+
+        class _FakeState:
+            field_slot = None
+
+        state = _FakeState()
+        assert equip_field(state, ["field_hearts"], "field_hearts") is True
+        assert state.field_slot == "field_hearts"
+        assert equip_field(state, ["field_hearts"], None) is True
+        assert state.field_slot is None
+
     def test_hats_have_a_drawing_function(self):
         """Every catalogue hat must actually render.
 

@@ -221,6 +221,20 @@ def equip_shell(game_state, inventory: list[str], item_id: str | None) -> bool:
     return True
 
 
+def equip_field(game_state, inventory: list[str], item_id: str | None) -> bool:
+    """Fit an owned background field, or clear back to the default (stars). Free either way."""
+    if item_id is None:
+        game_state.field_slot = None
+        return True
+    item = catalogue.get(item_id)
+    if item is None or item.kind is not ItemKind.FIELD:
+        return False
+    if item_id not in inventory:
+        return False
+    game_state.field_slot = item_id
+    return True
+
+
 def unequip(creature: Creature) -> None:
     """Take off whatever is being worn. Always free.
 

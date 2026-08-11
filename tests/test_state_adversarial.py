@@ -38,6 +38,52 @@ def _utcnow() -> datetime:
 
 
 # ---------------------------------------------------------------------------
+# Test: v4 -> v5 migration adds field_slot with no migration branch needed
+# ---------------------------------------------------------------------------
+
+class TestFieldSlotMigration:
+    """A pre-v5 save has no `field_slot` key at all. `_migrate`'s docstring
+    claims no migration branch is needed because Pydantic defaults it to
+    None — this confirms that claim against a real on-disk v4 file, rather
+    than trusting the comment."""
+
+    def test_v4_save_migrates_with_default_field_slot(self, tmp_path: Path) -> None:
+        now_iso = _utcnow().isoformat()
+
+        state_data = {
+            "version": 4,
+            "creature": {
+                "stage": "ADULT",
+                "hunger": 80.0,
+                "dormancy_start": None,
+                "hat_slot": None,
+                "daily_feeding_log": [],
+                "last_hunger_update": now_iso,
+                "pre_dormant_stage": None,
+            },
+            "wallet": {"bits": 10, "echoes": 5},
+            "baseline_tokens": {
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+            "lifetime_bits_earned": 30,
+            "first_launch": now_iso,
+            "last_launch": now_iso,
+            # No "field_slot" key at all — mimics a real pre-v5 save.
+        }
+
+        state_file = tmp_path / "state.json"
+        _write_state(state_file, state_data)
+
+        manager = StateManager(state_path=state_file)
+        state = manager.load()
+
+        assert state.version == SCHEMA_VERSION
+        assert state.field_slot is None
+
+
+# ---------------------------------------------------------------------------
 # Test: missing state directory is created automatically
 # ---------------------------------------------------------------------------
 

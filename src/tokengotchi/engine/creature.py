@@ -30,6 +30,24 @@ DORMANCY_TRIGGER_HOURS: float = 6.0  # 6 hours at 0 hunger → DORMANT
 EGG_TO_BABY_BITS: int = 5            # lifetime_bits_earned threshold
 BABY_TO_ADULT_DAYS: int = 7         # days with at least one feeding
 
+# The five-stage emotional ladder, poorest to richest. Both sprite rendering
+# (renderer/sprites.py) and dialogue-line selection (dialogue/scheduler.py)
+# read the bands from `hunger_state()` below so the two can never drift apart.
+HUNGER_BANDS: tuple[str, ...] = ("dying", "horror", "distressed", "sad", "healthy")
+
+
+def hunger_state(hunger: float) -> str:
+    """Return the hunger band name for a 0-100 hunger value."""
+    if hunger >= 75:
+        return "healthy"
+    if hunger >= 50:
+        return "sad"
+    if hunger >= 25:
+        return "distressed"
+    if hunger >= 10:
+        return "horror"
+    return "dying"
+
 
 class Creature:
     """

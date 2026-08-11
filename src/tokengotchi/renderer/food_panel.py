@@ -18,13 +18,31 @@ from ..engine import food as menu
 from . import easing, fooditems, skins as skinmod, theme, uikit
 
 PANEL_W = 342
-PANEL_H = 238
+PANEL_H = 248
 GRID_COLS = 3
 GRID_ROWS = 2
 GRID_TOP = 38
 GRID_MARGIN = 10
 GRID_GAP = 8
 FACE = uikit.READOUT_STACK
+
+# The icon's own 16x16 art canvas is blitted at an integer scale inside the
+# slot square (see fooditems.py's docstring on why: anything non-integer
+# blurs the pixel art). Foods like bread and apple happen to carry a built-in
+# transparent margin in their own art, so a too-tight canvas-vs-slot fit was
+# invisible for them; foods without that margin (cookie, cake, steak) had
+# their opaque pixels sit flush against the slot's rounded border/corners and
+# visually spilled past it. SLOT_INSET and ICON_PAD both exist so every food
+# gets real, visible clearance from its slot regardless of its own art.
+SLOT_INSET = 25  # shrink applied to the smaller cell dimension to get `slot`
+ICON_PAD = 6     # reserved clearance between the icon canvas and `slot`
+# `slot` also feeds the per-card name/cost/gain text block *below* it
+# (`sy + slot + ...`), so growing PANEL_H to give that text more breathing
+# room from the next grid row would, without a cap, just keep re-growing
+# `slot` too and eat the very room it was meant to free up. 54 is the exact
+# value needed for icon_scale 3 at ICON_PAD 6 (see the fix above) — capping
+# there lets extra PANEL_H flow to the text gap instead of the icon.
+MAX_SLOT = 54
 
 
 def _wrap(s: str, max_w: int, size: int, face=None) -> list[str]:
@@ -184,8 +202,8 @@ class FoodPanel:
             // GRID_COLS
         cell_h = (grid_bottom - GRID_TOP - GRID_GAP * (GRID_ROWS - 1)) \
             // GRID_ROWS
-        slot = max(30, min(cell_w, cell_h) - 30)
-        icon_scale = max(2, slot // fooditems.GRID)
+        slot = min(max(30, min(cell_w, cell_h) - SLOT_INSET), MAX_SLOT)
+        icon_scale = max(2, (slot - ICON_PAD) // fooditems.GRID)
         icon_px = fooditems.GRID * icon_scale
 
         rows = []
