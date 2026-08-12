@@ -31,7 +31,7 @@ import pytest
 from tokengotchi.dialogue import scheduler as sched_mod
 from tokengotchi.dialogue.context import resolve_context, tone_group
 from tokengotchi.dialogue.context_lines import CONTEXT_LINES
-from tokengotchi.dialogue.event_lines import PURCHASE_LINES
+from tokengotchi.dialogue.event_lines import ITEM_LINES, PURCHASE_LINES
 from tokengotchi.dialogue.lines import LINES
 from tokengotchi.dialogue.moment_lines import MOMENT_LINES
 from tokengotchi.dialogue.scheduler import CONTEXT_BIAS, DialogueScheduler
@@ -617,6 +617,45 @@ def test_first_of_kind_outranks_the_per_kind_pool_when_fed(window):
     window.note_purchase(HAT_ID, hunger=100.0, first_of_kind=True)
     assert window._pending_event in PURCHASE_LINES["first_of_kind"]
     assert window._pending_event not in PURCHASE_LINES["hat"]
+
+
+# ═══ 6b. PER-ITEM OVERRIDE — ITEM_LINES sits between first_of_kind and the ═
+# ═══      per-kind pool ════════════════════════════════════════════════════
+
+
+ITEM_ID = "hat_kippah"
+
+
+def test_an_item_with_its_own_line_draws_it_over_the_kind_pool(window):
+    """A per-item override is more specific than the kind-wide pool.
+
+    Fed, not first-of-kind: nothing above `ITEM_LINES` applies, so the
+    kippah's own line must be the one that gets parked, not a generic hat
+    line drawn from `PURCHASE_LINES["hat"]`.
+    """
+    window.note_purchase(ITEM_ID, hunger=100.0, first_of_kind=False)
+    assert window._pending_event == "You are invited to my bar mitzvah."
+    assert window._pending_event not in PURCHASE_LINES["hat"]
+
+
+def test_the_diversion_outranks_the_item_line(window):
+    """`starving` preempts everything, including a per-item line."""
+    window.note_purchase(ITEM_ID, hunger=12.0, first_of_kind=False)
+    assert window._pending_event in PURCHASE_LINES["starving"]
+    assert window._pending_event != "You are invited to my bar mitzvah."
+
+
+def test_first_of_kind_outranks_the_item_line(window):
+    """A first-of-kind milestone is about the whole collection, not this one
+    item, so it must still win even for an item with its own line."""
+    window.note_purchase(ITEM_ID, hunger=100.0, first_of_kind=True)
+    assert window._pending_event in PURCHASE_LINES["first_of_kind"]
+    assert window._pending_event != "You are invited to my bar mitzvah."
+
+
+def test_item_lines_pool_contains_the_kippah_line():
+    """Guards the premise of the tests above against a content edit."""
+    assert ITEM_LINES["hat_kippah"] == ("You are invited to my bar mitzvah.",)
 
 
 # ═══ 7. AN UNMAPPED ITEM MUST DEGRADE TO `generic`, NEVER TO SILENCE ══════

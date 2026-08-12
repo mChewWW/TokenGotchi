@@ -66,20 +66,31 @@ def hat_hidden_reason(stage: str, hunger: float) -> str | None:
     return None
 
 
-# Sized to sit INSIDE the device screen (348x250). A modal floating over the
-# CRT reads as a flat card pasted on an object and breaks the illusion outright.
-PANEL_W = 316
+# Sized to sit INSIDE the device screen (348x250), and to match RATES/FOOD so
+# all three overlays share one box size. A modal floating over the CRT reads as
+# a flat card pasted on an object and breaks the illusion outright.
+PANEL_W = 342
+# Fixed outer height, same as RATES/FOOD. The paged-row math below sums to
+# HEADER_H + TAB_H + PAGE_SIZE*ROW_H_PAGED + FOOTER_H = 234; PANEL_H funds a
+# 4px pad under the footer (was theme.SPACE_2=8, trimmed to hit 238 exactly).
+PANEL_H = 238
 ROW_H = 58
 HEADER_H = 42
 FOOTER_H = 32     # taller: carries the pager
 
-# The screen is 250px and body_h = HEADER + n*ROW + FOOTER + 8. Three rows
-# overflow by 2px, so the catalogue is PAGED rather than grown. Paging beats
+# The screen is 250px and body_h = HEADER + n*ROW + FOOTER + BODY_PAD. Three
+# rows overflow by 2px, so the catalogue is PAGED rather than grown. Paging beats
 # scrolling here: there is no scrollbar affordance to draw at this size, and a
 # page count tells you how much catalogue exists, which a scroll thumb does not.
 PAGE_SIZE = 3
 ROW_H_PAGED = 46      # sized so three rows fit; leaves no room for a blurb
 TAB_H = 22
+
+# Slack between the footer and the panel's bottom edge, derived so the outer
+# box is exactly PANEL_H (238). HEADER+TAB+3*ROW+FOOTER = 234, so this is 4px
+# (was theme.SPACE_2 = 8 at the old 242px height). The paged-row math is
+# untouched; only this trailing pad shrank to hit the shared box size.
+BODY_PAD = PANEL_H - (HEADER_H + TAB_H + PAGE_SIZE * ROW_H_PAGED + FOOTER_H)
 
 # Page-turn travel, in pixels. PANEL_W * 0.55 = 173px decayed LINEARLY over
 # 0.16s is 36px per frame at 30fps inside a 316px panel — that reads as an
@@ -437,7 +448,7 @@ class ShopPanel:
 
         # Always PAGE_SIZE rows tall, even on a short final page: a panel
         # that resizes as you page moves the controls under the cursor.
-        body_h = HEADER_H + TAB_H + PAGE_SIZE * ROW_H_PAGED + FOOTER_H + theme.SPACE_2
+        body_h = HEADER_H + TAB_H + PAGE_SIZE * ROW_H_PAGED + FOOTER_H + BODY_PAD
         panel = pygame.Surface((PANEL_W, body_h), pygame.SRCALPHA)
         self._paint_body(panel, items, inventory, hat_slot, bits, echoes,
                          draw_preview, p, stage, hunger, screen_slot, shell_slot,
@@ -493,7 +504,7 @@ class ShopPanel:
         self._close_rect = pygame.Rect(
             x0 + PANEL_W - 36, y0 + theme.SPACE_2, 26, 26
         )
-        h = HEADER_H + TAB_H + PAGE_SIZE * ROW_H_PAGED + FOOTER_H + theme.SPACE_2
+        h = HEADER_H + TAB_H + PAGE_SIZE * ROW_H_PAGED + FOOTER_H + BODY_PAD
         py_ = y0 + h - FOOTER_H + 4
         tw = (PANEL_W - theme.SPACE_3 * 2) // len(TABS)
         self._tab_rects = [

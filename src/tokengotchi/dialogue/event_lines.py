@@ -19,8 +19,13 @@ Selection precedence the call site is expected to implement, first match wins:
                        `first_of_kind`: a first hat bought over a starving pet
                        is not a milestone, it is the diversion's whole point.
 2. ``first_of_kind`` — the player owned nothing of this `ItemKind` before now.
-3. ``item.kind.value`` — the per-kind pool, e.g. ``PURCHASE_LINES["hat"]``.
-4. ``generic``       — hard fallback. Required by the brief: an unmapped or
+3. ``ITEM_LINES[item.id]`` — a per-item override, for the rare item whose
+                       flavour is specific enough that the shared per-kind
+                       pool would flatten it (e.g. `hat_kippah`). More
+                       specific than the per-kind pool, but still a purchase
+                       like any other, so it does not outrank `first_of_kind`.
+4. ``item.kind.value`` — the per-kind pool, e.g. ``PURCHASE_LINES["hat"]``.
+5. ``generic``       — hard fallback. Required by the brief: an unmapped or
                        future kind must never be silent. The call site should
                        read the per-kind pool as::
 
@@ -159,4 +164,12 @@ PURCHASE_LINES: dict[str, tuple[str, ...]] = {
         "I felt that go through. Something changed.",
         "That wasn't free. I know what things cost around here.",
     ),
+}
+
+# Per-item overrides, keyed by catalogue `Item.id` rather than `ItemKind`. Some
+# items are specific enough that the kind-wide pool above would flatten them
+# into a generic hat/screen/shell/field line; this dict lets one item speak
+# for itself while every other member of its kind keeps drawing from the pool.
+ITEM_LINES: dict[str, tuple[str, ...]] = {
+    "hat_kippah": ("You are invited to my bar mitzvah.",),
 }

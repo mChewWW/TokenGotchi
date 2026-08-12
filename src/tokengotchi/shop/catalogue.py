@@ -120,6 +120,7 @@ _HATS = (
     ("hat_beanie", "Beanie", "For a cold little skull.", Rarity.UNCOMMON),
     ("hat_a", "Top Hat", "Formalwear for a creature of standing.", Rarity.EPIC),
     ("hat_wizard", "Wizard Hat", "Starred, and slightly too large.", Rarity.EPIC),
+    ("hat_kippah", "Kippah", "Worn with quiet pride.", Rarity.EPIC),
     ("hat_b", "Crown", "Heavy is the head.", Rarity.LEGENDARY),
     ("hat_halo", "Halo", "Unearned.", Rarity.LEGENDARY),
 )

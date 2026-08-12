@@ -19,7 +19,7 @@ import pygame
 
 from ..config import BITS_RATIO
 from ..dialogue.context import resolve_context
-from ..dialogue.event_lines import PURCHASE_LINES
+from ..dialogue.event_lines import ITEM_LINES, PURCHASE_LINES
 from ..dialogue.moment_lines import MOMENT_LINES
 from ..dialogue.scheduler import DialogueScheduler
 from ..engine import food as foodmenu
@@ -39,6 +39,7 @@ from .rate_panel import RatePanel
 from .shop_panel import ShopPanel
 from .sprites import draw_creature
 from .taskbar_flash import flash_taskbar
+from . import winchrome
 
 WINDOW_W = 400
 WINDOW_H = 450
@@ -98,9 +99,21 @@ class GameWindow:
         import os
         os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
 
+        # Deliberately DPI-UNAWARE. At a scaled desktop (e.g. 150%) Windows
+        # bitmap-upscales the whole window, so the 400x450 case presents larger
+        # on screen — the size the app is designed to read at. Verified on a
+        # 150% machine that DWM scales the window bitmap AND the rounded region
+        # mask together, so the corners stay aligned with the painted edge; the
+        # only cost is a slightly softer upscale. Going DPI-aware instead
+        # rendered the case at true (smaller) pixels. See winchrome.set_dpi_aware
+        # (kept for callers that genuinely want native-pixel rendering).
+
         pygame.init()
 
-        flags = pygame.SHOWN
+        # NOFRAME removes the OS titlebar and border so the drawn case is the
+        # whole window. The lost titlebar takes window dragging and the OS
+        # minimize with it — both re-implemented below and in event routing.
+        flags = pygame.SHOWN | pygame.NOFRAME
         if always_on_top:
             flags |= 0x8000  # SDL_WINDOW_ALWAYS_ON_TOP (best-effort, Windows)
 
@@ -108,6 +121,19 @@ class GameWindow:
         pygame.display.set_caption("TokenGotchi")
         pygame.display.flip()
         pygame.event.pump()
+
+        # Clip the window to the case's rounded silhouette (transparent corners)
+        # and re-add WS_SYSMENU as an OS recovery backstop behind the drag-clamp.
+        winchrome.apply_round_region(WINDOW_W, WINDOW_H)
+        winchrome.restore_sysmenu()
+
+        # Drag state. The window is moved via Win32 (winchrome), so no _sdl2
+        # handle is needed; press starts a candidate drag that only commits once
+        # the cursor passes a small threshold, so a jittery click still clicks.
+        self._drag_active = False           # past the threshold, moving
+        self._drag_candidate = False        # pressed on chrome, not yet moving
+        self._drag_grab: tuple[int, int] | None = None   # cursor - origin
+        self._drag_press_cursor: tuple[int, int] | None = None
 
         self._clock = pygame.time.Clock()
         self._font = uikit.font(theme.FONT_LABEL)
@@ -169,6 +195,19 @@ class GameWindow:
         self._feed_rect = pygame.Rect(0, 0, 0, 0)
         self._shop_rect = pygame.Rect(0, 0, 0, 0)
         self._privacy_rect: pygame.Rect | None = None
+
+        # Window controls, in the top-right corner the stage label vacated.
+        # Close is rightmost (Windows convention); minimise sits to its left.
+        # Centred in the case FACE band above the screen, excluding the bezel:
+        # the face starts at BEZEL (8) and the screen at 40, so the 22px buttons
+        # are centred vertically in y[8,40] → top = 8 + (32-22)//2 = 13. The
+        # right edge at WINDOW_W - 26 matches the 26px inset the screen and SHOP
+        # use, so the controls align to the face's right margin, not the window.
+        _BTN = 22
+        _top = 13
+        _right = WINDOW_W - 26
+        self._close_rect = pygame.Rect(_right - _BTN, _top, _BTN, _BTN)
+        self._min_rect = pygame.Rect(_right - _BTN * 2 - 6, _top, _BTN, _BTN)
 
         # Cached constant overlays. They never change, so rebuilding them from
         # scratch every frame is pure waste.
@@ -436,6 +475,7 @@ class GameWindow:
         device.end_screen(surf, inner, skin, shell)
 
         self._draw_controls(surf, bits, echoes, stage, shell)
+        self._draw_window_buttons(surf, shell)
 
         # LAST, over everything, and outside the screen well. Three separate
         # reasons:
@@ -496,20 +536,30 @@ class GameWindow:
            not a milestone, it is the diversion's whole point. This is the
            contract's headline content behaviour.
         2. `first_of_kind` — nothing of this ItemKind was owned before now.
-        3. the per-kind pool — a hat, a screen, a shell and a field are
+           This still outranks a per-item line below: a first-of-kind line is
+           about the player's whole collection history, not this one item, so
+           it should win even for an item that also has its own line.
+        3. `ITEM_LINES[item_id]` — a per-item override. More specific than the
+           kind-wide pool (item 4): most items don't need one, but a handful
+           are specific enough that the kind pool would flatten them into a
+           generic hat/screen/shell/field line.
+        4. the per-kind pool — a hat, a screen, a shell and a field are
            mechanically different things and the writing carries that.
-        4. `generic` — a sixth ItemKind added to the catalogue later must
+        5. `generic` — a sixth ItemKind added to the catalogue later must
            degrade to a plausible line, never to silence.
         """
         if hunger_state(hunger) in _STARVING_BANDS:
-            key = "starving"
+            key, pool = "starving", PURCHASE_LINES["starving"]
         elif first_of_kind:
-            key = "first_of_kind"
+            key, pool = "first_of_kind", PURCHASE_LINES["first_of_kind"]
+        elif item_id in ITEM_LINES:
+            key, pool = item_id, ITEM_LINES[item_id]
         else:
             item = shopcat.get(item_id)
             kind = item.kind.value if item is not None else None
             key = kind if kind in PURCHASE_LINES else "generic"
-        self._park(f"purchase:{key}", PURCHASE_LINES.get(key, ()))
+            pool = PURCHASE_LINES.get(key, ())
+        self._park(f"purchase:{key}", pool)
 
     def note_moment(self, key: str) -> None:
         """A non-purchase moment happened (hatch, adult, wake, a feed).
@@ -617,6 +667,10 @@ class GameWindow:
 
     def _route_main(self, event, triggered) -> None:
         if event.type == pygame.MOUSEMOTION:
+            # A drag in progress owns the mouse: reposition the window and don't
+            # also update hover/hit state underneath it.
+            if self._update_drag():
+                return
             self._hover = self._hit_main(event.pos)
             return
 
@@ -632,11 +686,22 @@ class GameWindow:
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             self._pressed = self._hit_main(event.pos)
+            # A press on inert case chrome (no control under it) is a candidate
+            # window drag. It only commits to moving once the cursor passes a
+            # small threshold, so a click that happens to miss every button
+            # still registers as a click, not a jump.
+            if self._pressed is None:
+                self._begin_drag_candidate()
             return
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             was, self._pressed = self._pressed, None
+            was_dragging = self._drag_active
+            self._end_drag()
             hit = self._hit_main(event.pos)
+            # A committed drag consumes the release — no button should fire.
+            if was_dragging:
+                return
             # Fire only when press and release land on the same target, so a
             # drag off a button cancels it.
             if hit is None or hit != was:
@@ -647,9 +712,18 @@ class GameWindow:
                 self._shop.open(self._shop_rect.center)
             elif hit == "rate":
                 self._rates.open(self._rate_rect.center)
+            elif hit == "close":
+                self._quit = True
+                triggered.append("quit")
+            elif hit == "minimize":
+                winchrome.minimize()
             return
 
     def _hit_main(self, pos) -> str | None:
+        if self._close_rect.collidepoint(pos):
+            return "close"
+        if self._min_rect.collidepoint(pos):
+            return "minimize"
         if self._feed_rect.collidepoint(pos):
             return "feed"
         if self._shop_rect.collidepoint(pos):
@@ -657,6 +731,54 @@ class GameWindow:
         if self._rate_rect is not None and self._rate_rect.collidepoint(pos):
             return "rate"
         return None
+
+    # ── Window drag ──────────────────────────────────────────────────────────
+    #
+    # NOFRAME removed the OS titlebar, so the window is moved by dragging inert
+    # case chrome. Coordinates are screen-global (Win32 GetCursorPos), never the
+    # window-relative event.pos, so the frame of reference doesn't move with the
+    # window mid-drag. A >4px threshold separates a click from a drag.
+
+    _DRAG_THRESHOLD = 4
+
+    def _begin_drag_candidate(self) -> None:
+        cursor = winchrome.global_cursor()
+        origin = winchrome.window_origin()
+        if cursor is None or origin is None:
+            return
+        self._drag_candidate = True
+        self._drag_active = False
+        self._drag_press_cursor = cursor
+        self._drag_grab = (cursor[0] - origin[0], cursor[1] - origin[1])
+
+    def _update_drag(self) -> bool:
+        """Advance an in-flight drag. Returns True if the drag owns the mouse."""
+        if not self._drag_candidate:
+            return False
+        cursor = winchrome.global_cursor()
+        if cursor is None or self._drag_grab is None:
+            return self._drag_active
+        if not self._drag_active:
+            px, py = self._drag_press_cursor or cursor
+            if (abs(cursor[0] - px) + abs(cursor[1] - py)
+                    < self._DRAG_THRESHOLD):
+                return False        # still within click tolerance
+            self._drag_active = True
+        nx = cursor[0] - self._drag_grab[0]
+        ny = cursor[1] - self._drag_grab[1]
+        # Clamp against the monitor the CURSOR is on (always a real monitor),
+        # so the window can be dragged freely across monitors and never pinned
+        # into an off-screen dead zone.
+        nx, ny = winchrome.clamp_window(nx, ny, WINDOW_W, WINDOW_H,
+                                        cursor=cursor)
+        winchrome.move_window(nx, ny)
+        return True
+
+    def _end_drag(self) -> None:
+        self._drag_candidate = False
+        self._drag_active = False
+        self._drag_grab = None
+        self._drag_press_cursor = None
 
     # ── Currency roll ───────────────────────────────────────────────────────
 
@@ -676,17 +798,25 @@ class GameWindow:
     # ── Drawing ─────────────────────────────────────────────────────────────
 
     def _draw_silkscreen(self, surf, stage: str, shell=None) -> None:
-        """Lettering printed on the case, above the screen."""
+        """Lettering printed on the case, above the screen.
+
+        The top-right stage label used to live here; it was removed when the OS
+        titlebar went away and minimise/close moved into that corner instead.
+        """
         sh = shell or skinmod.SHELL_DEFAULT
         device.draw_ink_text(surf, (28, 18), "TOKENGOTCHI", sh.text,
                              theme.FONT_CAPTION)
-        # The STAGE label goes through ink adaptation for the same reason the
-        # currency read-out does: hardcoded gold on the bare case measures
-        # 1.03 contrast on Clear and 1.24 on Bone, five of eight shells
-        # failing.
-        lab = uikit.text(stage.upper(), theme.BITS, theme.FONT_CAPTION, bold=True)
-        device.draw_ink_text(surf, (WINDOW_W - 28 - lab.get_width(), 18),
-                             stage.upper(), theme.BITS, theme.FONT_CAPTION)
+
+    def _draw_window_buttons(self, surf, shell=None) -> None:
+        """Minimise and close, moulded into the case's top-right corner."""
+        device.draw_window_button(
+            surf, self._min_rect, "min", shell=shell,
+            hovered=self._hover == "minimize",
+            pressed=self._pressed == "minimize")
+        device.draw_window_button(
+            surf, self._close_rect, "close", shell=shell,
+            hovered=self._hover == "close",
+            pressed=self._pressed == "close")
 
     def _draw_creature(self, inner, game_state, stage: str, hunger: float,
                        skin=None) -> int:

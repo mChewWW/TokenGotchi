@@ -1,2 +1,2 @@
 # TokenGotchi — a Tamagotchi-style virtual pet powered by Claude Code token usage.
-__version__ = "1.27.0"
+__version__ = "1.29.0"

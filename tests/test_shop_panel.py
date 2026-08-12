@@ -354,6 +354,15 @@ class TestCatalogue:
     def test_unknown_id(self):
         assert catalogue.get("nope") is None
 
+    def test_hat_kippah_is_epic_and_priced_at_450(self):
+        """A specific catalogue entry, not just the generic tier sweep above:
+        pins the exact id/rarity/price a designer expects to find."""
+        from tokengotchi.shop.catalogue import Rarity
+        item = catalogue.get("hat_kippah")
+        assert item is not None
+        assert item.rarity is Rarity.EPIC
+        assert item.cost == 450
+
 
 class TestHiddenHatWarning:
     """Hats are invisible at egg stage and below 10% hunger.

@@ -245,6 +245,17 @@ def _draw_halo(surface: pygame.Surface, cx: int, head_top: int) -> None:
     b(-3, -4, 2, 1, (214, 174, 56))      # underside in shadow
 
 
+def _draw_kippah(surface: pygame.Surface, cx: int, head_top: int) -> None:
+    """Small domed skullcap on the crown, with a rim and a single trim stitch."""
+    b = lambda *a: _hat_block(surface, cx, head_top, *a)
+    cloth, rim, trim = (120, 40, 54), (78, 24, 34), (214, 182, 92)
+    b(-1, -3, 3, 1, cloth)                # narrow domed crown
+    b(-2, -2, 5, 1, cloth)                # widest point, ~1/4 of head width
+    b(2, -2, 1, 1, rim)                   # shaded right edge for roundness
+    b(-2, -1, 5, 1, rim)                  # thin contrasting rim along the base
+    b(0, -3, 1, 1, trim)                  # single accent stitch near center top
+
+
 def _draw_crown(surface: pygame.Surface, cx: int, head_top: int) -> None:
     """Draw a proper pixel-art crown above the creature's head."""
     crown_w = 36
@@ -1285,6 +1296,7 @@ def draw_creature(
         "hat_beanie": _draw_beanie,
         "hat_wizard": _draw_wizard,
         "hat_halo": _draw_halo,
+        "hat_kippah": _draw_kippah,
     }
     fn = _HATS.get(hat)
     if fn is not None:

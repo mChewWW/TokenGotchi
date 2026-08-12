@@ -37,11 +37,121 @@ def screen_rect() -> pygame.Rect:
     return pygame.Rect(SCREEN_X, SCREEN_Y, SCREEN_W, SCREEN_H)
 
 
+def _backing_plate(size, sh):
+    """The rounded outer plate — a BEVELLED LIP whose gradient runs ACROSS the
+    rim's width, not across the whole case.
+
+    Only the BEZEL-wide margin of this plate is ever visible (the body covers
+    the rest at inset BEZEL), so this IS the case's raised outer lip. The two
+    earlier attempts — a flat dark rim, then a diagonal light->dark ramp across
+    the full 400x450 diagonal — both read as a flat picture-frame, because over
+    an 8px rim a whole-case diagonal barely changes colour. A real bevel's
+    cross-section instead ramps from a bright specular at the very outer edge,
+    through a mid tone, down to the face colour where the rim meets the body —
+    as a function of DISTANCE FROM THE OUTER EDGE, and modulated by which edge
+    faces the light (top/left catch it, bottom/right fall to shadow, for a
+    single top-left source). That per-edge cross-width ramp is what the eye
+    reads as a rounded raised lip.
+
+    Built from a rounded-rect distance field in numpy:
+      * `depth`  — how far a pixel sits inside the outer rounded edge (0 on the
+        edge, growing inward); the ramp is a function of this.
+      * `bright` — a Lambert term from the outward surface normal dotted with a
+        top-left light, so the SAME depth ramp is bright on the top/left faces
+        and dark on the bottom/right, and swings continuously through the
+        rounded corners.
+
+    Rounded at BEZEL+22=30 so it agrees with the window's region clip. Cached
+    per (size, shell): the edge never changes between frames.
+    """
+    key = ("plate", size, sh.id)
+    got = _overlay_cache.get(key)
+    if got is not None:
+        return got
+    w, h = size
+    R = float(BEZEL + 22)          # outer corner radius (== region clip)
+
+    xs = np.arange(w, dtype=np.float32)[:, None]
+    ys = np.arange(h, dtype=np.float32)[None, :]
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    px = xs - cx                                       # (w, 1)
+    py = ys - cy                                       # (1, h)
+    ex, ey = w / 2.0 - R, h / 2.0 - R                  # core (un-rounded) extents
+
+    # Signed-distance depth into the rounded outer edge (0 on the edge, +inward).
+    qx = np.abs(px) - ex
+    qy = np.abs(py) - ey
+    outside = np.sqrt(np.maximum(qx, 0.0) ** 2 + np.maximum(qy, 0.0) ** 2)
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    depth = R - (outside + inside)                     # >0 inside; 0 at edge
+
+    # Outward normal = direction from the point to its clamp onto the core rect.
+    # On a straight edge this is an axis; in a corner it swings diagonally, so
+    # the light wraps the corner instead of stopping at it.
+    cpx = np.clip(px, -ex, ex) + 0.0 * py              # broadcast to (w, h)
+    cpy = np.clip(py, -ey, ey) + 0.0 * px
+    nx = (px - cpx)
+    ny = (py - cpy)
+    nlen = np.sqrt(nx * nx + ny * ny)
+    ok = nlen > 1e-4
+    nx = np.where(ok, nx / np.maximum(nlen, 1e-4), 0.0)
+    ny = np.where(ok, ny / np.maximum(nlen, 1e-4), 0.0)
+    L = 0.70710678                                     # top-left light (-1,-1)
+    lit = -(nx * L + ny * L)                           # -1 (BR) .. +1 (TL)
+    bright = 0.5 + 0.5 * lit                           # 0..1
+
+    u = np.clip(depth / float(BEZEL), 0.0, 1.0)        # 0 outer edge -> 1 face
+    s = u * u * (3.0 - 2.0 * u)                        # smoothstep reads curved
+    # Glossy specular: only the outermost ~1.6px of the LIT faces, top-left.
+    gloss = (np.clip(1.0 - depth / 1.6, 0.0, 1.0)
+             * np.clip((bright - 0.55) / 0.45, 0.0, 1.0))
+
+    def bevel(hi, lo):
+        spec = _lerp(hi, (255, 255, 255), 0.65)        # lit outer edge
+        shad = _lerp(lo, (0, 0, 0), 0.30)              # shadow outer edge
+        out = np.empty((w, h, 3), dtype=np.float32)
+        for c in range(3):
+            # Outer-edge tone swings shadow->spec with the light; the rim then
+            # ramps from that outer tone to the body's own hi at the face. So
+            # the lit side falls bright->mid across the width and the shadow
+            # side rises dark->mid — a genuine bevel cross-section, per edge.
+            outer_c = shad[c] + (spec[c] - shad[c]) * bright
+            band = outer_c + (hi[c] - outer_c) * s
+            out[:, :, c] = band + (255.0 - band) * gloss * 0.55
+        return out
+
+    ramp = bevel(sh.hi, sh.lo)
+    if sh.body_right:
+        # Asymmetric case (Joy-Con): the right half wears its own hi tone so the
+        # seam stays true rather than the whole edge taking the left tone.
+        ramp_r = bevel(sh.hi_right or sh.body_right, sh.lo)
+        half = w // 2
+        ramp[half:, :, :] = ramp_r[half:, :, :]
+
+    plate = pygame.Surface(size, pygame.SRCALPHA)
+    rgb = pygame.surfarray.pixels3d(plate)
+    rgb[:] = np.clip(ramp, 0.0, 255.0).astype(np.uint8)
+    del rgb
+    # pixels3d leaves alpha at 0; make the plate fully opaque, THEN intersect its
+    # alpha with the rounded silhouette so only the corners are cut away.
+    alpha = pygame.surfarray.pixels_alpha(plate)
+    alpha[:] = 255
+    del alpha
+    mask = uikit.round_rect(size, BEZEL + 22, (255, 255, 255), border=None)
+    plate.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+
+    _overlay_cache[key] = plate
+    return plate
+
+
 def draw_shell(surf: pygame.Surface, shell=None) -> None:
-    """The moulded case: dark base, lit body, soft top bevel."""
+    """The moulded case: lit chamfer rim, lit body, 3-D perimeter relief."""
     sh = shell or skinmod.SHELL_DEFAULT
     w, h = surf.get_size()
-    surf.blit(uikit.round_rect((w, h), 0, sh.lo, border=None), (0, 0))
+    # The outer plate is a lit chamfer (see _backing_plate); its visible margin
+    # is the case's 3-D rim. Rounded at BEZEL+22 so it agrees with the window's
+    # region clip — no square corner peeks through.
+    surf.blit(_backing_plate((w, h), sh), (0, 0))
     body = uikit.round_rect(
         (w - BEZEL * 2, h - BEZEL * 2), 22, sh.body,
         gradient_to=sh.hi, border=sh.hi, top_highlight=60,
@@ -74,6 +184,54 @@ def draw_shell(surf: pygame.Surface, shell=None) -> None:
         # has its highlight baked in and nothing ever sits *behind* glass.
         surf.blit(_internals((w, h), sh), (0, 0))
         surf.blit(_thickness((w, h), sh), (0, 0))
+    # Perimeter relief LAST, so the case edge reads as raised on every skin
+    # (not just translucent ones) now that there's no OS frame to give it depth.
+    # Confined to the outer band — it never reaches the screen or the controls.
+    surf.blit(_perimeter((w, h), sh), (0, 0))
+
+
+def _perimeter(size, sh):
+    """The single contact line where the raised body meets the bevelled rim.
+
+    The whole 3-D read now lives in the bevel cross-section baked into
+    `_backing_plate` (a per-edge ramp: bright specular at the outer edge on the
+    top-left, falling to the body tone at the inner edge, dark on the
+    bottom-right). This used to add a 3-ring dark ambient-occlusion seam here,
+    but that seam read as a black TRENCH cutting the rim off from the face — the
+    exact "flat frame sitting on top of the case" the redesign set out to kill.
+
+    So all that remains is ONE subtle 1px contact line at the very foot of the
+    body wall: a hair of shadow on the top-left (where the raised wall casts
+    into the rim) and a hair of light on the bottom-right (where the rim catches
+    it), no trench. Confined to the outer band — the screen recess and controls
+    are never touched. Cached per (size, shell).
+    """
+    key = ("perim", size, sh.id)
+    got = _overlay_cache.get(key)
+    if got is not None:
+        return got
+    w, h = size
+    s = pygame.Surface(size, pygame.SRCALPHA)
+    x0, y0 = BEZEL, BEZEL
+
+    # One 1px ring hugging the body's foot, drawn full in a contact-shadow tone,
+    # then split by the light: alpha strongest on the TOP-LEFT (wall shadow),
+    # near zero on the bottom-right so no dark line rings the lit corner.
+    contact = _lerp(sh.lo, (0, 0, 0), 0.25)
+    line = pygame.Surface(size, pygame.SRCALPHA)
+    pygame.draw.rect(line, (*contact, 255),
+                     (x0, y0, w - BEZEL * 2, h - BEZEL * 2),
+                     width=1, border_radius=22)
+    xs = np.arange(w, dtype=np.float32)[:, None]
+    ys = np.arange(h, dtype=np.float32)[None, :]
+    fade = (1.0 - (xs + ys) / float(w + h)) * 70.0      # 70 at TL -> 0 at BR
+    a = pygame.surfarray.pixels_alpha(line)
+    a[:] = (a.astype(np.float32) * (fade / 255.0)).astype(np.uint8)
+    del a
+    s.blit(line, (0, 0))
+
+    _overlay_cache[key] = s
+    return s
 
 
 # Real component colours, BEFORE the shell tints them. Drawing everything in
@@ -646,6 +804,56 @@ def draw_button(
         uikit.blit_centered(surf, lab, r, dx=-12)
         c = uikit.text(cost, fg, theme.FONT_CAPTION, bold=True)
         surf.blit(c, (r.centerx + 16, r.centery - c.get_height() // 2))
+
+
+def draw_window_button(
+    surf: pygame.Surface,
+    rect: pygame.Rect,
+    glyph: str,
+    *,
+    hovered: bool = False,
+    pressed: bool = False,
+    shell=None,
+) -> None:
+    """A minimize/close control moulded from the SHELL's own tones.
+
+    Deliberately NOT `draw_button`: that path tints by currency (amber=BITS,
+    cyan=ECHOES) and a window control has no currency meaning — borrowing the
+    tint would imply a transactional action. So the face is built from the
+    shell's body/hi/lo, and the glyph (`_` minimise, `×` close) is an
+    ink-adapted stroke so it stays legible on every skin, translucent and metal
+    included.
+    """
+    sh = shell or skinmod.SHELL_DEFAULT
+    r = rect.move(0, 1) if pressed else rect
+
+    # Face a touch lighter than the case so the control reads as a raised pad,
+    # brightening further on hover. Border and glyph share one ink, adapted to
+    # the face behind them.
+    k = 0.34 if hovered else 0.22
+    face = _lerp(sh.body, sh.hi, k)
+    grad = _lerp(face, sh.lo, 0.5)
+    hi = 150 if hovered else 110
+
+    surf.blit(
+        uikit.round_rect((r.w, r.h), 7, face,
+                         gradient_to=grad, border=sh.hi, top_highlight=hi),
+        r.topleft,
+    )
+
+    ink_col = ink.adapt(sh.text, face)
+    # Centre the glyph in the pad's FLAT interior, not its raw rect. Two biases
+    # pull a geometrically-centred glyph visually low: a width-2 stroke grows
+    # downward (so its ink centroid sits ~0.5px below the given y), and the
+    # pad's own top_highlight brightens the top edge, thickening the lit lip
+    # there and dropping the perceived centre. A 1px upward nudge cancels both.
+    cx, cy = r.centerx, r.centery - 1
+    if glyph == "close":
+        d = 5
+        pygame.draw.line(surf, ink_col, (cx - d, cy - d), (cx + d, cy + d), 2)
+        pygame.draw.line(surf, ink_col, (cx + d, cy - d), (cx - d, cy + d), 2)
+    else:  # minimise — dash on the pad's optical centre line
+        pygame.draw.line(surf, ink_col, (cx - 5, cy), (cx + 5, cy), 2)
 
 
 def draw_vent(surf: pygame.Surface, x: int, y: int,

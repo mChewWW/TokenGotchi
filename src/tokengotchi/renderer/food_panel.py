@@ -18,10 +18,14 @@ from ..engine import food as menu
 from . import easing, fooditems, skins as skinmod, theme, uikit
 
 PANEL_W = 342
-PANEL_H = 248
+PANEL_H = 238        # matches RATES so the three overlays share one box size
 GRID_COLS = 3
 GRID_ROWS = 2
-GRID_TOP = 38
+# GRID_TOP was 38 at the old PANEL_H=248. Dropping the box to 238 (to match
+# RATES) removed 10px from the grid; the icon slot is capped at MAX_SLOT so it
+# can't absorb the loss, so the grid start moves up to keep the same ~3px gap
+# between a card's stat row and the next row (see test_food_panel).
+GRID_TOP = 32
 GRID_MARGIN = 10
 GRID_GAP = 8
 FACE = uikit.READOUT_STACK
@@ -194,7 +198,7 @@ class FoodPanel:
                          face=FACE)
         surf.blit(bal, (PANEL_W - 38 - bal.get_width(), 9))
         put(PANEL_W - 26, 9, "X", dim, size=theme.FONT_LABEL)
-        pygame.draw.line(surf, sk.phosphor, (12, 32), (PANEL_W - 12, 32))
+        pygame.draw.line(surf, sk.phosphor, (12, 28), (PANEL_W - 12, 28))
 
         footer_h = 34
         grid_bottom = PANEL_H - footer_h
@@ -264,7 +268,9 @@ class FoodPanel:
         never covers a card.
         """
         pad = 10
-        y = grid_bottom + 4
+        # +6, not +4: at PANEL_H=238 the bottom row's stat text reaches a few
+        # px into this footer strip, so the caption starts just below it.
+        y = grid_bottom + 6
         for line in _wrap(f.blurb, PANEL_W - pad * 2, theme.FONT_CAPTION,
                           face=FACE)[:2]:
             surf.blit(uikit.text(line, sk.meter[1], theme.FONT_CAPTION,
