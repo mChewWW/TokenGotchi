@@ -1,6 +1,6 @@
 # TokenGotchi
 
-TokenGotchi is a Tamagotchi-style virtual pet that lives on your Claude Code token usage. Every time Claude Code burns tokens on your behalf, your little creature gets fed, gains experience, and evolves. Neglect your coding and it will grow restless — keep shipping and it will thrive.
+TokenGotchi is a Tamagotchi-style virtual pet that lives on your Claude Code token usage. Every time Claude Code burns tokens, gain currency to keep your pet alive. Neglect your coding and it will grow restless — keep shipping and it will thrive.
 
 ## Prerequisites
 
