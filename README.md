@@ -1,6 +1,6 @@
 # TokenGotchi
 
-TokenGotchi is a Tamagotchi-style virtual pet that lives on your Claude Code token usage. Every time Claude Code burns tokens on your behalf, your little creature gets fed, gains experience, and evolves. Neglect your coding and it will grow restless — keep shipping and it will thrive.
+TokenGotchi is a Tamagotchi-style virtual pet that lives on your Claude Code token usage. It reads your local Claude Code session files, converts the tokens you spend into in-game currency, and uses that to feed, grow, and evolve a little creature that sits in its own desktop window. Use Claude Code and your pet thrives; leave it alone and it goes hungry.
 
 ## Prerequisites
 
@@ -9,10 +9,6 @@ TokenGotchi is a Tamagotchi-style virtual pet that lives on your Claude Code tok
 - **Claude Code, already installed and used at least once.** TokenGotchi has no data source of its own — it reads Claude Code's own session files. If you've never run Claude Code, install and use it first, then come back here.
 
 ## Install
-
-If you just want to play, grab `TokenGotchi.exe` from the
-[Releases](https://github.com/mChewWW/TokenGotchi/releases) page and run it —
-no Python needed. To run or modify the source, read on.
 
 Clone the repo and set up a virtual environment:
 
@@ -32,6 +28,16 @@ pip install -e ".[dev]"
 This registers the `tokengotchi` console command used below, and pulls in the test dependencies.
 
 If you'd rather not do an editable install, `pip install -r requirements.txt` will install the same runtime dependencies from a flat file — but it does **not** register the `tokengotchi` command, since that only happens through `pyproject.toml`'s packaging metadata. If you go this route, run the game with `python -m tokengotchi.main` instead (see below).
+
+### Building a standalone .exe
+
+If you'd rather not keep a Python environment around just to launch the game, you can build your own single-file `TokenGotchi.exe` with [PyInstaller](https://pyinstaller.org/). From your clone of the repo:
+
+```bash
+scripts\build.bat
+```
+
+This installs PyInstaller and its dependencies and produces `dist\TokenGotchi.exe`. Once it's built, you can launch that file directly — no Python environment needed to run it.
 
 ## Running
 
@@ -60,13 +66,40 @@ The **FOOD** button is deliberately greyed out while your pet is an egg — eggs
 
 **If the bar never moves**, this almost always means Claude Code hasn't produced any usage data yet, not that something is broken. Have a Claude Code session with the TokenGotchi window open and progress should start appearing. See Troubleshooting below if it still doesn't.
 
+## What You Can Do
+
+- **Feed your pet.** Every reply Claude Code gives you earns BITS (output tokens ÷ 500) and, once cache usage adds up, ECHOES (cache tokens ÷ 100,000). Open the FOOD menu and spend BITS to refill your pet's hunger.
+- **Grow it up.** Your pet moves through three life stages: **Egg → Baby → Adult** — see [Life Stages](#life-stages) below.
+- **Shop for cosmetics.** Spend ECHOES in the SHOP on hats, screen skins, and case shells to customize your pet's device — see [Shop](#shop) below.
+- **Watch the rate panel.** Open it to see your current earn rate, today's usage, and how your pet's appetite is trending, so you know whether you're ahead of or behind your own recent pace.
+- **Get dialogue from your pet.** It speaks on its own every few minutes, and reacts immediately to things you do — feeding it, buying something, or watching it hatch.
+
 ## Controls
 
 | Control | Key | What it does |
 | --- | --- | --- |
 | **FOOD** | `F` | Opens the food menu. Spends BITS to refill hunger. Disabled while your pet is an egg, and while it's mid-bite. |
 | **SHOP** | `S` | Opens the cosmetics shop — hats, screen skins, and cases. Hover an item to preview it on the real device before you buy. |
-| The earn rate, top-right of the screen (`500T=1b >` at the default rate) | `R` | Opens the rates panel: your current earn rate, today's usage, and how your pet's appetite is trending. The number itself shifts as your usage does. |
+| The earn rate, top-right of the screen (e.g. `500T=1b >` at the default rate) | `R` | Opens the rates panel: your current earn rate, today's usage, and how your pet's appetite is trending. The number itself shifts as your usage does. |
+
+## Life Stages
+
+- **Egg → Baby:** happens once your pet has earned **5 BITS total**. This shold be achieved in your first few minutes.
+- **Baby → Adult:** happens with continued regular feeding over time.
+- **Dormant:** if hunger sits at 0 for **6 straight hours**, your pet goes dormant. It's not gone — feeding it successfully wakes it back up into whatever stage it was in before.
+
+Hunger itself isn't a fixed drain: your pet's appetite (and your earn rate) scale with your trailing 7-day average Claude Code usage, so a heavy user's pet eats faster but also earns BITS faster, and a light user's pet is gentler on both counts. Hunger and earning only tick while the TokenGotchi window is open — closing the app pauses your pet entirely, it doesn't starve in the background.
+
+## Shop
+
+The SHOP sells cosmetics, priced in ECHOES by rarity tier — **Uncommon (200)**, **Epic (450)**, **Legendary (900)** — across four categories:
+
+- **Hats** — worn by the creature itself.
+- **Screens** — a display skin for the device's screen.
+- **Shells** — a case skin for the device body.
+- **Fields** — a background particle effect (snow, embers, hearts, and so on).
+
+All shop cosmetics are bought once and owned permanently; hover an item to preview it on the device before buying.
 
 ## How it Works
 
@@ -74,7 +107,7 @@ TokenGotchi reads Claude Code's own session transcripts — the JSONL files Clau
 
 `~/.claude/stats-cache.json` (a file Claude Code writes only when a session ends) is **not** the live data source — it's consulted only as a compatibility check to confirm TokenGotchi understands the version of data Claude Code is producing.
 
-TokenGotchi sums the token counts from those session files, converts them into in-game currency (BITS and ECHOES), and feeds that currency into the game engine. Your pet's hunger, stage, and wallet update accordingly. Spend currency in the in-game shop to unlock cosmetics for your creature.
+TokenGotchi sums the token counts from those session files and converts them into BITS (from output tokens) and ECHOES (from cache tokens), feeding both into the game engine described above.
 
 **Privacy note:** TokenGotchi is entirely offline. It only reads local Claude Code session files from your own machine and never transmits any data anywhere.
 
@@ -86,7 +119,6 @@ TokenGotchi sums the token counts from those session files, converts them into i
 ## Known Limitations
 
 - No macOS/Linux instructions — only Windows behavior has been verified.
-- The pre-built executable is published as a release asset, not committed to this repository.
 - No demo/offline mode exists yet for trying TokenGotchi without a Claude Code account.
 - No in-app error messaging yet for "no session data found" or "schema version mismatch" — both conditions are detected internally but not surfaced visually; see Troubleshooting above.
 
